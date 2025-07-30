@@ -1,0 +1,30 @@
+[package]
+name = "fast_uid"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+# The name of the python module will be `fast_uid`.
+name = "rustid" 
+# "cdylib" is for creating a dynamic library for Python to import.
+crate-type = ["cdylib"]
+
+[dependencies]
+# The main dependency for Rust-Python interoperability.
+pyo3 = { version = "0.21.0", features = ["extension-module"] }
+
+# High-performance UUID generation library.
+# We enable the "v7" feature for time-ordered UUIDs and "fast-rng" for performance.
+uuid = { version = "1.8.0", features = ["v7", "fast-rng"] }
+
+# Efficient base64 encoding to make the UUID URL-safe.
+base64 = "0.22.0"
+
+# Optional: For potentially parallelizing batch generation.
+rayon = "1.10.0"
+
+
+[package.metadata.maturin]
+name = "rustid"
+
+

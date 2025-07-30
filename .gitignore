@@ -1,0 +1,56 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Pytest cache
+.pytest_cache/
+
+# Build artifacts
+build/
+dist/
+target/
+*.egg-info/
+*.egg
+
+# Wheels
+*.whl
+
+# Rust artifacts
+Cargo.lock
+/target/
+
+# Maturin wheel output
+target/wheels/
+
+# MacOS
+.DS_Store
+
+# VSCode
+.vscode/
+
+# Logs
+*.log
+
+# IDE files
+.idea/
+*.iml
+
+# pyenv local version file
+.python-version
+
+# Twine upload cache
+*.pypirc
+
+# Coverage reports
+htmlcov/
+.coverage
+coverage.xml
+
+# Test output
+test/__pycache__/
