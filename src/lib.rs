@@ -1,96 +1,191 @@
-// src/lib.rs: The core logic for the unique ID generator.
-
 use pyo3::prelude::*;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use rayon::prelude::*; // For parallel processing
+use pyo3::types::PyBytes;
+use base64::{engine::general_purpose::{URL_SAFE_NO_PAD, STANDARD}, Engine as _};
+use rayon::prelude::*;
 
-/// # Internal function to generate a single URL-safe ID.
-///
-/// It creates a time-ordered UUID v7 and truncates it to 9 bytes,
-/// which are then Base64 encoded into a 12-character string.
-///
-/// WARNING: Truncating the ID to 12 characters (from 72 bits of data) significantly
-/// increases the probability of collisions compared to using the full 
-/// 22-character (128-bit) UUID. For applications requiring extremely high
-/// uniqueness guarantees (e.g., billions of IDs generated per second),
-/// consider using the full 128-bit UUID or a different ID generation strategy.
-#[inline]
-fn generate_one_id() -> String {
-    // 1. Generate a new UUID version 7 (128 bits / 16 bytes).
-    //    `now_v7()` is highly optimized and uses a timestamp with millisecond precision,
-    //    plus random bits to ensure uniqueness.
+#[pyclass]
+#[derive(Clone, Copy)]
+pub struct UUID {
+    bytes: [u8; 16],
+}
+
+#[pymethods]
+impl UUID {
+    #[new]
+    fn new(hex: Option<&str>, bytes: Option<Bound<'_, PyBytes>>) -> PyResult<Self> {
+        if let Some(hex_str) = hex {
+            let clean = hex_str.replace("-", "");
+            if clean.len() != 32 {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid hex length"));
+            }
+            let mut bytes = [0u8; 16];
+            for i in 0..16 {
+                bytes[i] = u8::from_str_radix(&clean[i*2..i*2+2], 16)
+                    .map_err(|_| PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid hex"))?;
+            }
+            Ok(UUID { bytes })
+        } else if let Some(py_bytes) = bytes {
+            let bytes_slice = py_bytes.as_bytes();
+            if bytes_slice.len() != 16 {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Invalid bytes length"));
+            }
+            let mut bytes = [0u8; 16];
+            bytes.copy_from_slice(bytes_slice);
+            Ok(UUID { bytes })
+        } else {
+            Err(PyErr::new::<pyo3::exceptions::PyValueError, _>("Either hex or bytes required"))
+        }
+    }
+
+    #[getter]
+    fn hex(&self) -> String {
+        hex::encode(self.bytes)
+    }
+
+    #[getter]
+    fn bytes<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.bytes)
+    }
+
+    #[getter]
+    fn version(&self) -> u8 {
+        (self.bytes[6] >> 4) & 0x0f
+    }
+
+    #[getter]
+    fn variant(&self) -> String {
+        let variant_bits = self.bytes[8] >> 6;
+        match variant_bits {
+            0b00 | 0b01 => "reserved for NCS compatibility".to_string(),
+            0b10 => "specified in RFC 4122".to_string(),
+            0b11 => "reserved for Microsoft compatibility".to_string(),
+            _ => "unknown".to_string(),
+        }
+    }
+
+    fn __str__(&self) -> String {
+        format!("{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            self.bytes[0], self.bytes[1], self.bytes[2], self.bytes[3],
+            self.bytes[4], self.bytes[5], self.bytes[6], self.bytes[7],
+            self.bytes[8], self.bytes[9], self.bytes[10], self.bytes[11],
+            self.bytes[12], self.bytes[13], self.bytes[14], self.bytes[15])
+    }
+
+    fn __repr__(&self) -> String {
+        format!("UUID('{}')", self.__str__())
+    }
+
+    fn __eq__(&self, other: &UUID) -> bool {
+        self.bytes == other.bytes
+    }
+
+    fn __hash__(&self) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        self.bytes.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn short_id(&self) -> String {
+        URL_SAFE_NO_PAD.encode(&self.bytes[0..12])  // Use 12 bytes instead of 9
+    }
+
+    fn base64(&self) -> String {
+        STANDARD.encode(&self.bytes)
+    }
+
+    fn int(&self) -> u128 {
+        u128::from_be_bytes(self.bytes)
+    }
+}
+
+#[pyfunction]
+fn uuid1() -> UUID {
+    let id = uuid::Uuid::now_v1(&[1, 2, 3, 4, 5, 6]);
+    UUID { bytes: *id.as_bytes() }
+}
+
+#[pyfunction]
+fn uuid4() -> UUID {
+    let id = uuid::Uuid::new_v4();
+    UUID { bytes: *id.as_bytes() }
+}
+
+#[pyfunction]
+fn uuid7() -> UUID {
     let id = uuid::Uuid::now_v7();
-    let full_id_bytes = id.as_bytes();
-
-    // 2. Truncate to the first 9 bytes (72 bits).
-    //    This preserves the time-based sorting property of UUIDv7 while
-    //    reducing the length. The first 6 bytes contain the timestamp.
-    let truncated_bytes = &full_id_bytes[0..9];
-
-    // 3. Encode the 9 bytes into a 12-character URL-safe Base64 string.
-    //    URL_SAFE_NO_PAD ensures characters like '+' and '/' are replaced
-    //    and no padding '=' characters are added.
-    URL_SAFE_NO_PAD.encode(truncated_bytes)
+    UUID { bytes: *id.as_bytes() }
 }
 
-/// Generates a single, 12-character, URL-safe, time-sortable unique ID.
-///
-/// This ID is based on a truncated UUID v7, ensuring it is time-ordered
-/// and suitable for use in URLs or filenames.
-///
-/// WARNING: The shorter 12-character length increases the probability of
-/// collisions compared to longer, full UUIDs. Use with caution for
-/// extremely high-volume ID generation scenarios where collision
-/// probability must be minimized.
-///
-/// Returns:
-///     str: A 12-character URL-safe unique ID string.
 #[pyfunction]
-fn generate_id() -> String {
-    generate_one_id()
-}
-
-/// Generates a batch of unique IDs in parallel for maximum performance.
-///
-/// This function leverages the `rayon` crate to parallelize the ID generation
-/// process across all available CPU cores, making it extremely fast for large batches.
-/// Each ID generated is a 12-character, URL-safe, time-sortable unique ID.
-///
-/// Args:
-///     count (int): The number of unique IDs to generate.
-///
-/// Returns:
-///     list[str]: A list containing the generated 12-character unique IDs.
-#[pyfunction]
-fn generate_batch(count: usize) -> Vec<String> {
-    // Use a parallel iterator provided by `rayon` to generate the IDs.
-    // `(0..count).into_par_iter()` creates a parallel iterator that will
-    // distribute the work of calling `generate_one_id()` across multiple threads.
+fn uuid4_batch(count: usize) -> Vec<UUID> {
     (0..count)
         .into_par_iter()
-        .map(|_| generate_one_id())
+        .map(|_| UUID { bytes: *uuid::Uuid::new_v4().as_bytes() })
         .collect()
 }
 
-/// # The Python module definition.
-///
-/// This block uses the `#[pymodule]` macro from PyO3 to define the Python module.
-/// The module is named `rustid`, matching the `[lib]` name specified in `Cargo.toml`.
-///
-/// Functions exposed to Python must be added to the module using `m.add_function()`.
-///
-/// Args:
-///     _py (Python): The Python interpreter instance (often not directly used
-///                   when only adding functions).
-///     m (Bound<'_, PyModule>): A mutable reference to the Python module object.
-///
-/// Returns:
-///     PyResult<()>: A result indicating success or failure.
+#[pyfunction]
+fn uuid7_batch(count: usize) -> Vec<UUID> {
+    (0..count)
+        .into_par_iter()
+        .map(|_| UUID { bytes: *uuid::Uuid::now_v7().as_bytes() })
+        .collect()
+}
+
+#[pyfunction]
+fn short_id() -> String {
+    let id = uuid::Uuid::now_v7();
+    URL_SAFE_NO_PAD.encode(&id.as_bytes()[0..12])  // Use 12 bytes for better uniqueness
+}
+
+#[pyfunction]
+fn short_id_batch(count: usize) -> Vec<String> {
+    (0..count)
+        .into_par_iter()
+        .map(|_| {
+            let id = uuid::Uuid::now_v7();
+            URL_SAFE_NO_PAD.encode(&id.as_bytes()[0..12])  // Use 12 bytes
+        })
+        .collect()
+}
+
+#[pyfunction]
+#[pyo3(signature = (size=None))]
+fn nano_id(size: Option<usize>) -> String {
+    let alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_";
+    let size = size.unwrap_or(21);
+    let mut result = String::with_capacity(size);
+    
+    for _ in 0..size {
+        let idx = fastrand::usize(0..alphabet.len());
+        result.push(alphabet.chars().nth(idx).unwrap());
+    }
+    result
+}
+
+#[pyfunction]
+#[pyo3(signature = (count, size=None))]
+fn nano_id_batch(count: usize, size: Option<usize>) -> Vec<String> {
+    let size = size.unwrap_or(21);
+    (0..count)
+        .into_par_iter()
+        .map(|_| nano_id(Some(size)))
+        .collect()
+}
+
 #[pymodule]
 fn rustid(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Add the Rust functions `generate_id` and `generate_batch` to the Python module.
-    // `wrap_pyfunction!` is a macro that converts a Rust function into a Python callable.
-    m.add_function(wrap_pyfunction!(generate_id, m)?)?;
-    m.add_function(wrap_pyfunction!(generate_batch, m)?)?;
+    m.add_class::<UUID>()?;
+    m.add_function(wrap_pyfunction!(uuid1, m)?)?;
+    m.add_function(wrap_pyfunction!(uuid4, m)?)?;
+    m.add_function(wrap_pyfunction!(uuid7, m)?)?;
+    m.add_function(wrap_pyfunction!(uuid4_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(uuid7_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(short_id, m)?)?;
+    m.add_function(wrap_pyfunction!(short_id_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(nano_id, m)?)?;
+    m.add_function(wrap_pyfunction!(nano_id_batch, m)?)?;
     Ok(())
 }

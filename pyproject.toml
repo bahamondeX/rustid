@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rustid"
-version = "0.0.1"
+version = "0.0.2"
 description = "Fast URL-safe unique ID generator in Rust"
 authors = [{ name = "Oscar Bahamonde", email = "oscar.bahamonde@pucp.pe" }]
 readme = "README.md"
